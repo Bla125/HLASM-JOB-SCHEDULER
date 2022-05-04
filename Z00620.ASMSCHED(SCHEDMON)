@@ -1,0 +1,290 @@
+//SCHEDMON JOB 0,'HLASM JOB SCHEDULER',
+//         MSGCLASS=A,MSGLEVEL=(1,1),
+//         NOTIFY=&SYSUID
+//ASMCLG EXEC PROC=ASMHCLG
+//SYSIN  DD *
+         PRINT ON,NODATA,NOGEN
+
+*        MONITORS THE SCHEDREC AND RUNS THE SCHEDULED JOBS
+
+********************************************
+*        REGISTER EQUATES                  *
+********************************************
+R0       EQU   0
+R1       EQU   1
+R2       EQU   2
+R3       EQU   3
+R4       EQU   4
+R5       EQU   5
+R6       EQU   6
+R7       EQU   7
+R8       EQU   8
+R9       EQU   9
+R10      EQU   10
+R11      EQU   11
+R12      EQU   12
+R13      EQU   13
+R14      EQU   14
+R15      EQU   15
+********************************************
+JOBINPUT DSECT
+*                                   DSECT FOR READING JOB SCHEDULE
+FILLER1  DS    CL8
+JOBNAME  DS    CL44                 JOB DATASET NAME
+FILLER2  DS    CL9
+JOBTIME  DS    CL4                  JOB TIME TO RUN
+INPUTLEN EQU   *-JOBINPUT           LENGTH OF JOBINPUT
+
+SCHEDMON CSECT
+         STM   R14,R12,12(R13)
+         BASR  R12,0                ESTABLISH
+         USING *,R12                ADDRESSABILITY
+         ST    R13,SAVEAREA+4       BACKWARD CHAIN CALLER
+         LA    R13,SAVEAREA         ADDRESS OF SAVE AREA
+
+********************************************
+*        MAIN PROGRAM LOGIC                *
+********************************************
+         OPEN  (SCHEDREC,(INPUT))
+*         OPEN  (FILEOUT,(OUTPUT))
+
+********************************************
+*        CHECK SCHEDULED TIME              *
+********************************************
+*        ESTABLISH CURRENT TIME BEFORE CHECKING SCHEDULE
+
+         TIME  DEC,DATETIME,ZONE=GMT,LINKAGE=SYSTEM,DATETYPE=MMDDYYYY
+
+         MVC   TIMENOW(2),DATETIME
+         SRP   TIMENOW,64-1,0       SHIFT ONE TO THE RIGHT,NO ROUNDING
+
+GETTIME  EQU   *
+         USING JOBINPUT,R5          R5 USING JOBINPUT DSECT
+         GET   SCHEDREC             GET RECORD FROM FILEIN
+         LR    R5,R1                LOAD R5 WITH RECORD FROM FILEIN
+
+         PACK  PACKTIME,JOBTIME     PACK JOBTIME FOR COMPARISON
+
+*         CP    TIMENOW,PACKTIME
+*         BE    GETJOB
+*         B     GETTIME
+         B     GETJOB
+*PRINT    EQU   *
+*         MVC   TIMEDOUT,TIMEDWD     MOVE EDIT WORD TO EDIT OUTPUT
+*         ED    TIMEDOUT,TIMENOW     EDIT CURRENT TIME TO EDIT OUTPUT
+*
+*         MVC   OUTREC,=CL80' '
+*         MVC   OUTREC(10),TIMEDOUT
+*         PUT   FILEOUT,OUTREC
+*
+*         MVC   TIMEDOUT,TIMEDWD     MOVE EDIT WORD TO EDIT OUTPUT
+*         ED    TIMEDOUT,PACKTIME    EDIT CURRENT TIME TO EDIT OUTPUT
+*
+*         MVC   OUTREC,=CL80' '
+*         MVC   OUTREC(10),TIMEDOUT
+*         PUT   FILEOUT,OUTREC
+*
+*         B     EOF
+
+
+********************************************
+*        RETRIEVE JOB NAME                 *
+********************************************
+*         OPEN  (SCHEDREC,(INPUT))
+*         OPEN  (FILEOUT,(OUTPUT))
+
+*         USING JOBINPUT,R5          R5 USING JOBINPUT DSECT
+*         GET   SCHEDREC               GET RECORD FROM FILEIN
+*         LR    R5,R1                LOAD R5 WITH RECORD FROM FILEIN
+
+
+
+GETJOB   EQU   *
+         MVC   STRBUF(44),JOBNAME   MOVE JOBNAME FROM RECORD TO STRBUF
+
+         SR    R2,R2                EMPTY REGISTER 2, START COUNT AT 0
+         LA    R3,STRBUF            LOAD JOBNAME INTO R3
+         LA    R4,L'STRBUF          LOAD JOBNAME LENGTH INTO R3
+FINDLEN  CLI   0(R3),C' '           CHECK TO SEE IF BYTE CONTAINS BLANK
+         BE    FOUNDLEN             IF BLANK, EXIT LOOP, GOTO FOUNDLEN
+         LA    R2,1(,R2)            IF NOT, INCREMENT LENGTH BY 1
+         LA    R3,1(,R3)            IF NOT, INCREMENT ADDRESS BY 1
+         AP    STRLEN,=P'1'         INCREMENT STRLEN BY 1
+         BCT   R4,FINDLEN           LOOP LENGTH OF STRING
+         B     FOUNDLEN             LENGTH OF JOBNAME IS 44
+
+
+FOUNDLEN EQU   *
+*         MVC   EDOUT,EDWD           MOVE EDIT WORD INTO EDIT OUTPUT
+*         ED    EDOUT,STRLEN         EDIT STRING LENGTH TO EDOUT OUTPUT
+*
+*         MVC   OUTREC,=CL80' '      FILL OUTREC WITH BLANKS
+*         MVC   OUTREC(5),EDOUT      MOVE EDIT OUTPUT TO OUTREC
+*         PUT   FILEOUT,OUTREC       WRITE OUTREC TO FILEOUT
+
+         MVC   0(5,R3),DASHR  MOVE SHR TEXT TO END OF JOBNAME IN STRBUF
+         LA    R2,5(,R2)            LOAD R2 WITH NEW LENGTH OF JOBNAME
+         EX    R2,STR2DA        EX: MVC MYFILE+22(0),STRBUF WITH R2 LEN
+
+*         MVC   OUTREC,=CL80' '      FILL OUTREC WITH BLANKS
+*         MVC   OUTREC(46),MYFILE+2  MOVE MYFILE TO OUTREC
+*         PUT   FILEOUT,OUTREC       WRITE OUTREC TO FILEOUT
+         B     ALLOCJOB             BRANCH TO ALLOCJOB
+
+********************************************
+*        DYNAMIC ALLOCATION                *
+********************************************
+ALLOCJOB EQU   *
+         SR    R0,R0
+         LINK  EP=BPXWDYN,PARAM=(MYFILE),VL=1
+         LTR   R15,R15
+         BZ    RUNJOB
+         BNZ   EOF
+*DYNWRITE EQU   *
+*         OPEN  (DDN,(OUTPUT))
+*
+*         MVC   OUTREC,=CL80' '
+*         MVC   OUTREC(5),=C'HELLO'
+*         PUT   DDN,OUTREC
+*
+*         CLOSE (DDN)
+*         LINK  EP=BPXWDYN,PARAM=(FREEFILE),VL=1
+*         B     RUNJOB
+********************************************
+*        WRTIE TO INTERNAL READER          *
+********************************************
+RUNJOB   EQU   *
+         OPEN  (DDN,(INPUT))
+         OPEN  (INTRDR,(OUTPUT))
+
+INTRWRITE EQU  *
+         GET   DDN,INREC
+         MVC   OUTREC,=CL80' '
+         MVC   OUTREC,INREC
+         PUT   INTRDR,OUTREC
+         B     INTRWRITE
+
+
+*         MVC   OUTREC,=CL80' '
+*         MVC   OUTREC(8),=C'JOBNAME:'
+*         MVC   OUTREC+8(21),JOBNAME
+*         MVC   OUTREC+30(8),=C'JOBTIME:'
+*         MVC   OUTREC+38(4),JOBTIME
+*         PUT   FILEOUT,OUTREC
+
+EOF      EQU   *
+         CLOSE (SCHEDREC)
+*         CLOSE (FILEOUT)
+         CLOSE (INTRDR)
+         CLOSE (DDN)
+         LINK  EP=BPXWDYN,PARAM=(FREEFILE),VL=1
+
+         L     R13,SAVEAREA+4       POINT AT OLD SAVE AREA
+         LM    R14,R12,12(R13)      RESTORE THE REGISTERS
+         LA    R15,0                RETURN CODE = 0
+         BR    R14                  RETURN TO THE OPERATING SYSTEM
+********************************************
+*        SYMBOL DECLARATIONS               *
+********************************************
+STRLEN   DC    PL3'0'
+STRBUF   DS    CL49
+
+EDWD     DC    X'2020202020'
+EDOUT    DS    XL5
+
+DATETIME DS    PL16
+TIMENOW  DC    PL3'0'
+PACKTIME DC    PL3'0'
+
+TIMEDWD  DC    X'21202020202020202020202020202020'
+TIMEDOUT DS    XL16
+
+DASHR     DC    CL5') SHR'
+********************************************
+*        EX INSTRUCTIONS                   *
+********************************************
+
+STR2DA   MVC   MYFILE+22(0),STRBUF
+*SHR2DA   MVC   MYFILE+43(5),DASHR
+********************************************
+*        DYNAMIC ALLOCATION DECLARATIONS   *
+********************************************
+*DDN      DCB   DDNAME=MYFILE,DSORG=PS,MACRF=(PM),RECFM=FB,LRECL=80
+
+DDN      DCB   DDNAME=MYFILE,                                          X
+               DSORG=PS,                                               X
+               MACRF=(GM),                                             X
+               RECFM=FB,                                               X
+               LRECL=80,                                               X
+               EODAD=EOF
+
+*MYFILE   DC    Y(MYFILE1)
+*         DC    CL47'ALLOC FI(MYFILE) DA(Z00620.ASMSCHED(TEST)) SHR'
+*MYFILE1  EQU   *-MYFILE-2
+
+MYFILE   DC    Y(MYFILE1)
+         DC    CL69'ALLOC FI(MYFILE) DA('
+MYFILE1  EQU   *-MYFILE-2
+
+FREEFILE DC    Y(FREEFILE1)
+         DC    C'FREE FI(MYFILE)'
+FREEFILE1 EQU  *-FREEFILE-2
+
+********************************************
+*        INTPUT FILE - DATA CONTROL BLOCK  *
+********************************************
+SCHEDREC DCB   DSORG=PS,                                               X
+               MACRF=(GL),                                             X
+               DDNAME=SCHEDREC,                                        X
+               RECFM=FB,                                               X
+               EODAD=EOF,                                              X
+               LRECL=80
+
+********************************************
+*        INTPUT RECORD AREA                *
+********************************************
+INREC    DS    CL80
+
+********************************************
+*        OUTPUT FILE - DATA CONTROL BLOCK  *
+********************************************
+FILEOUT  DCB   DSORG=PS,                                               X
+               MACRF=(PM),                                             X
+               DDNAME=FILEOUT,                                         X
+               RECFM=FB,                                               X
+               LRECL=80
+
+********************************************
+*        INTRDR - DATA CONTROL BLOCK       *
+********************************************
+INTRDR   DCB   DSORG=PS,                                               X
+               MACRF=(PM),                                             X
+               DDNAME=INTRDR,                                          X
+               RECFM=FB,                                               X
+               LRECL=80
+
+********************************************
+*        OUTPUT RECORD AREA                *
+********************************************
+OUTREC   DS    CL80
+
+********************************************
+*        REGISTER SAVE AREA                *
+********************************************
+SAVEAREA DS    18F
+
+********************************************
+*        LITERAL POOL                      *
+********************************************
+         LTORG *
+
+********************************************
+*        END OF PROGRAM                    *
+********************************************
+         END   SCHEDMON
+/*
+//G.SYSUDUMP   DD SYSOUT=*
+//G.SCHEDREC   DD DSN=Z00620.SCHEDREC,DISP=SHR
+//G.FILEOUT    DD DSN=Z00620.ASMSCHED(TEST),DISP=SHR
+//G.INTRDR     DD SYSOUT=(,INTRDR)
+
