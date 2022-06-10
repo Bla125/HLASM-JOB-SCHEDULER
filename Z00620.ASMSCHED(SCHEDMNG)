@@ -1,0 +1,372 @@
+//SCHEDMNG JOB 0,'HLASM JOB SCHEDULER',
+//         MSGCLASS=A,MSGLEVEL=(1,1),
+//         NOTIFY=&SYSUID
+//ASMCL  EXEC PROC=ASMHCL
+//L.SYSLMOD    DD DSN=Z00620.LOAD(SCHEDMNG),DISP=SHR
+//L.STEPLIB     DD DSN=Z00620.LOAD,DISP=SHR
+//C.SYSIN  DD *
+         PRINT ON,NODATA,NOGEN
+
+*        MANAGES AND EDITS THE SCHEDREC, ADDS NEW JOBS/DATA
+*        FUNCTIONALITY:
+*              ADD JOB TO SCHEDREC
+*              REMOVE JOB FROM SCHEDREC
+*              EDIT JOB SCHEDULE PARAMETERS IN SCHEDREC SUCH AS:
+*              TIME, DEPENDENCIES
+*              PROCESS COMMANDS, EX. 'C JOB123' TO CANCEL JOB 'JOB123'
+
+********************************************
+*        REGISTER EQUATES                  *
+********************************************
+R0       EQU   0
+R1       EQU   1
+R2       EQU   2
+R3       EQU   3
+R4       EQU   4
+R5       EQU   5
+R6       EQU   6
+R7       EQU   7
+R8       EQU   8
+R9       EQU   9
+R10      EQU   10
+R11      EQU   11
+R12      EQU   12
+R13      EQU   13
+R14      EQU   14
+R15      EQU   15
+
+********************************************
+PASSED   DSECT
+*                                DSECT FOR PASSED PARAMETERS
+PASSEDNAME DS  CL44              PASSED NAME PARAMETER
+PASSEDTIME DS  CL4               PASSED TIME PARAMETER
+PASSDEDCMD DS  CL6               PASSED COMMAND PARAMETER
+
+********************************************
+SCHEDMNG CSECT
+         STM   R14,R12,12(R13)
+         BASR  R12,0                ESTABLISH
+         USING *,R12                ADDRESSABILITY
+         ST    R13,SAVEAREA+4       BACKWARD CHAIN CALLER
+         LA    R13,SAVEAREA         ADDRESS OF SAVE AREA
+********************************************
+*        MAIN PROGRAM LOGIC                *
+********************************************
+* LOAD AND MOVE PASSED PARAMETERS INTO SYMBOLS
+         L     R3,0(R1)             LOAD PASSED PARAMETERS INTO R3
+         USING PASSED,R3            USING PASSED DSECT
+
+         MVC   JOBNAME,PASSEDNAME   MOVE NAME PARAM INTO JOBNAME
+         MVC   JOBTIME,PASSEDTIME   MOVE TIME PARAM INTO JOBNAME
+         MVC   JOBCMD,PASSDEDCMD    MOVE CMD PARAM INTO JOBNAME
+
+* CHECK THE CONTENTS OF THE COMMAND PARAMETER THAT WAS PASSED
+         CLC   =C'ADD',JOBCMD       IF CMD = ADD
+         BE    CMDADD               BRANCH TO CMDADD
+
+         CLC   =C'EDIT',JOBCMD      IF CMD = EDIT
+         BE    CMDEDIT              BRANCH TO CMDEDIT
+
+         CLC   =C'DELETE',JOBCMD    IF CMD = DELETE
+         BE    CMDDELETE            BRANCH TO CMDDELETE
+
+         B     PROGEND              IF NO VALID CMD, BRANCH TO PROGEND
+
+********************************************
+*        ADD COMMAND                       *
+********************************************
+CMDADD   EQU   *
+         SR    R0,R0                      SET R0 TO 0
+         LINK  EP=BPXWDYN,PARAM=(COPYOUTFILE),VL=1  DYN ALLOC COPYREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    OPENADD                    IF RC = 0 BRANCH TO OPENADD
+         BNZ   PROGEND                    IF RC /= 0 BRANCH TO PROGEND
+
+OPENADD  EQU   *
+         OPEN  (COPYOUT,(EXTEND))       OPEN COPYREC FOR EXTEND OUTPUT
+
+         MVC   OUTREC,=CL80' '            ADD BLANKS TO OUTREC
+         MVC   OUTREC(8),=C'JOBNAME:'     MOVE JOBNAME LABEL TO OUTREC
+         MVC   OUTREC+8(44),JOBNAME       MOVE JOBNAME TO OUTREC
+         MVC   OUTREC+53(8),=C'JOBTIME:'  MOVE JOBTIME LABEL TO OUTREC
+         MVC   OUTREC+61(4),JOBTIME       MOVE JOBTIME TO OUTREC
+         PUT   COPYOUT,OUTREC             WRITE OUTREC TO COPYREC
+
+         CLOSE (COPYOUT)                           CLOSE COPYREC
+         LINK  EP=BPXWDYN,PARAM=(COPYOUTFREE),VL=1 FREE COPYREC
+         B     COPYTOSCHED                BRANCH TO ADDCOPYTOSCHED
+
+********************************************
+*        EDIT COMMAND                      *
+********************************************
+CMDEDIT  EQU   *
+         SR    R0,R0                               SET R0 TO 0
+         LINK  EP=BPXWDYN,PARAM=(SCHEDINFILE),VL=1  DYN ALLOC SCHEDREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    OPENEDIT                   IF RC = 0 BRANCH TO OPENEDIT
+         BNZ   PROGEND                    IF RC /= 0 BRANCH TO PROGEND
+
+OPENEDIT EQU   *
+         OPEN  (SCHEDIN,(INPUT))          OPEN SCHEDREC FOR INPUT
+         B     EDITCOPYALLOC              BRANCH TO EDITCOPYALLOC
+
+EDITCOPYALLOC EQU *
+         SR    R0,R0                                SET R0 TO 0
+         LINK  EP=BPXWDYN,PARAM=(COPYOUTFILE),VL=1  DYN ALLOC COPYREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    EDITCOPYOPEN         IF RC = 0 BRANCH TO EDITCOPYOPEN
+         BNZ   COPYOPENFAIL         IF RC /= 0 BRANCH TO COPYOPENFAIL
+
+EDITCOPYOPEN EQU *
+         OPEN  (COPYOUT,(OUTPUT))        OPEN COPYREC FOR OUTPUT
+         B     EDITREADWRITELOOP         BRANCH TO EDITREADWRITELOOP
+
+* EDITREADWRITELOOP: WRITE THE CONTENTS OF COPYREC TO SCHEDREC
+* CHECK IF THE JOB BEING READ IS THE ONE FROM THE PASSED PARAMETER
+* IF IT IS THE SAME, CHANGE THE TIME TO THE PASSED PARAMETER AND,
+* WRITE TO SCHEDREC
+EDITREADWRITELOOP EQU *
+         GET   SCHEDIN,INREC        READ RECORD FROM SCHEDREC TO INREC
+         MVC   OUTREC,=CL80' '      FILL OUTREC WITH BLANKS
+         MVC   RECNAME(44),INREC+8 MOVE JOBNAME FROM INREC TO RECNAME
+         CLC   JOBNAME,RECNAME  CHECK IF JOBNAME AND RECNAME ARE SAME
+         BE    EDITNAME         IF SAME CHANGE JOBTIME IN INREC
+BACKTOLOOP EQU *
+         MVC   OUTREC,INREC         MOVE INREC TO OUTREC
+         PUT   COPYOUT,OUTREC       WRITE OUTREC TO COPYREC
+         B     EDITREADWRITELOOP    BRANCH TO BEGINNING OF LOOP
+
+EDITNAME EQU   *
+         MVC   INREC+61(4),JOBTIME  CHANGE JOBTIME IN INREC
+         B     BACKTOLOOP           BRANCH BACK TO LOOP
+
+********************************************
+*        DELETE COMMAND                    *
+********************************************
+CMDDELETE EQU  *
+         SR    R0,R0                                SET R0 T0 0
+         LINK  EP=BPXWDYN,PARAM=(SCHEDINFILE),VL=1  DYN ALLOC SCHEDREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    OPENDELETE               IF RC = 0 BRANCH TO OPENDELETE
+         BNZ   PROGEND                  IF RC /= 0 BRANCH TO PROGEND
+
+OPENDELETE EQU *
+         OPEN  (SCHEDIN,(INPUT))          OPEN SCHEDREC FOR INPUT
+         B     DELETECOPYALLOC            BRANCH TO DELETECOPYALLOC
+
+DELETECOPYALLOC EQU *
+         SR    R0,R0                                SET R0 TO 0
+         LINK  EP=BPXWDYN,PARAM=(COPYOUTFILE),VL=1  DYN ALLOC COPYREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    DELETECOPYOPEN       IF RC = 0 BRANCH TO DELETECOPYOPEN
+         BNZ   COPYOPENFAIL         IF RC /= 0 BRANCH TO COPYOPENFAIL
+
+DELETECOPYOPEN EQU *
+         OPEN  (COPYOUT,(OUTPUT))   OPEN COPYOUT FOR OUTPUT
+         B     DELETEREADWRITELOOP  BRANCH TO DELETEREADWRITELOOP
+
+DELETEREADWRITELOOP EQU *
+         GET   SCHEDIN,INREC        READ RECORD FROM SCHEDREC TO INREC
+         MVC   OUTREC,=CL80' '      FILL OUTREC WITH BLANKS
+         MVC   RECNAME(44),INREC+8  MOVE JOBNAME FROM INREC TO RECNAME
+         CLC   JOBNAME,RECNAME   CHECH IF JOBNAME AND RECNAME ARE SAME
+         BE    CHECKTIME         IF EQUAL SKIP AND READ NEXT REC
+CONTINUELOOP EQU *
+         MVC   OUTREC,INREC         ELSE MOVE INREC TO OUTREC
+         PUT   COPYOUT,OUTREC       WRITE OUTREC TO COPYOUT
+         B     DELETEREADWRITELOOP
+
+CHECKTIME EQU  *
+         MVC   RECTIME(4),INREC+61
+         CLC   JOBTIME,RECTIME
+         BE    DELETEREADWRITELOOP
+         BNE   CONTINUELOOP
+
+********************************************
+*        COPY TO SCHED                     *
+********************************************
+COPYTOSCHED EQU *
+         SR    R0,R0                                SET R0 TO 0
+         LINK  EP=BPXWDYN,PARAM=(COPYINFILE),VL=1   DYN ALLOC COPYREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    COPYOPEN                  IF RC = 0 BRANCH TO COPYOPEN
+         BNZ   PROGEND                   IF RC /= 0 BRANCH TO PROGEND
+
+COPYOPEN EQU *
+         OPEN  (COPYIN,(INPUT))           OPEN COPYREC FOR INPUT
+         B     SCHEDALLOC                 BRANCH TO SCHEDALLOC
+
+SCHEDALLOC EQU *
+         SR    R0,R0                                SET R0 TO 0
+         LINK  EP=BPXWDYN,PARAM=(SCHEDOUTFILE),VL=1 DYN ALLOC SCHEDREC
+         LTR   R15,R15                             CAPTURE RETURN CODE
+         BZ    SCHEDOPEN            IF RC = 0 BRANCH TO SCHEDOPEN
+         BNZ   SCHEDOPENFAIL        IF RC /= 0 BRANCH TO SCHEDOPENFAIL
+
+SCHEDOPEN EQU *
+         OPEN  (SCHEDOUT,(OUTPUT))        OPEN SCHEDREC FOR OUTPUT
+         B     READWRITELOOP              BRANCH TO READWRITELOOP
+
+
+READWRITELOOP EQU *
+         GET   COPYIN,INREC         READ RECORD FROM COPYREC TO INREC
+         MVC   OUTREC,=CL80' '      FILL OUTREC WITH BLANKS
+         MVC   OUTREC,INREC         MOVE INREC TO OUTREC
+         PUT   SCHEDOUT,OUTREC      WRITE OUTREC TO SCHEDREC
+         B     READWRITELOOP        BRANCH TO BEGINNNING OF LOOP
+
+********************************************
+*        EOF AND ALLOC FAILS               *
+********************************************
+COPYINEOF EQU  *
+         CLOSE (COPYIN)                               CLOSE COPYREC
+         LINK  EP=BPXWDYN,PARAM=(COPYINFREE),VL=1     FREE COPYREC
+         CLOSE (SCHEDOUT)                             CLOSE SCHEDREC
+         LINK  EP=BPXWDYN,PARAM=(SCHEDOUTFREE),VL=1   FREE SCHEDREC
+         B     PROGEND                     BRANCH TO END OF PROGRAM
+
+SCHEDINEOF EQU *
+         CLOSE (SCHEDIN)                              CLOSE SCHEDREC
+         LINK  EP=BPXWDYN,PARAM=(SCHEDINFREE),VL=1    FREE SCHEDREC
+         CLOSE (COPYOUT)                              CLOSE COPYREC
+         LINK  EP=BPXWDYN,PARAM=(COPYOUTFREE),VL=1    FREE COPYREC
+         B     COPYTOSCHED                   BRANCH TO COPYTOSCHED
+
+SCHEDOPENFAIL EQU *
+         CLOSE (COPYIN)                               CLOSE COPYREC
+         LINK  EP=BPXWDYN,PARAM=(COPYINFREE),VL=1     FREE COPYREC
+         B     PROGEND
+
+COPYOPENFAIL EQU *
+         CLOSE (SCHEDIN)                              CLOSE SCHEDREC
+         LINK  EP=BPXWDYN,PARAM=(SCHEDINFREE),VL=1    FREE SCHEDREC
+         B     PROGEND
+********************************************
+*        END OF PROGRAM                    *
+********************************************
+
+PROGEND  EQU   *
+         L     R13,SAVEAREA+4       POINT AT OLD SAVE AREA
+         LM    R14,R12,12(R13)      RESTORE THE REGISTERS
+         LA    R15,0                RETURN CODE = 0
+         BR    R14                  RETURN TO THE OPERATING SYSTEM
+********************************************
+*        SYMBOL DECLARATIONS               *
+********************************************
+RECNAME  DS    CL44
+RECTIME  DS    CL4
+
+********************************************
+*        JOB COMMAND INPUT                 *
+********************************************
+JOBCMD   DS    CL6
+JOBNAME  DS    CL44
+JOBTIME  DS    CL4
+
+********************************************
+*        DYNAMIC ALLOCATION DECLARATIONS   *
+********************************************
+* COPYREC OUTPUT *
+******************
+COPYOUTFILE  DC    Y(COPYOUTFILE1)
+             DC    CL69'ALLOC FI(COPYOUTD) DA(Z00620.COPYREC) SHR'
+COPYOUTFILE1 EQU   *-COPYOUTFILE-2
+
+COPYOUTFREE  DC    Y(COPYOUTFREE1)
+             DC    C'FREE FILE(COPYOUTD)'
+COPYOUTFREE1 EQU  *-COPYOUTFREE-2
+
+********************************************
+* COPYREC INPUT *
+*****************
+COPYINFILE  DC  Y(COPYINFILE1)
+            DC  CL69'ALLOC FI(COPYINDD) DA(Z00620.COPYREC) SHR'
+COPYINFILE1 EQU *-COPYINFILE-2
+
+COPYINFREE  DC    Y(COPYINFREE1)
+            DC    C'FREE FILE(COPYINFILE)'
+COPYINFREE1 EQU  *-COPYINFREE-2
+
+********************************************
+* SCHEDREC OUTPUT *
+*******************
+SCHEDOUTFILE  DC    Y(SCHEDOUTFILE1)
+              DC    CL69'ALLOC FI(SCHEDOD) DA(Z00620.SCHEDREC) SHR'
+SCHEDOUTFILE1 EQU   *-SCHEDOUTFILE-2
+
+SCHEDOUTFREE  DC    Y(SCHEDOUTFREE1)
+              DC    C'FREE FILE(SCHEDOD)'
+SCHEDOUTFREE1 EQU  *-SCHEDOUTFREE-2
+
+********************************************
+* SCHEDREC INPUT  *
+*******************
+SCHEDINFILE  DC    Y(SCHEDINFILE1)
+              DC    CL69'ALLOC FI(SCHEDID) DA(Z00620.SCHEDREC) SHR'
+SCHEDINFILE1 EQU   *-SCHEDINFILE-2
+
+SCHEDINFREE  DC    Y(SCHEDINFREE1)
+              DC    C'FREE FILE(SCHEDID)'
+SCHEDINFREE1 EQU  *-SCHEDINFREE-2
+
+********************************************
+*        OUTPUT FILE - DATA CONTROL BLOCK  *
+********************************************
+COPYOUT  DCB   DSORG=PS,                                               X
+               MACRF=(PM),                                             X
+               DDNAME=COPYOUTD,                                        X
+               RECFM=FB,                                               X
+               LRECL=80
+
+********************************************
+SCHEDOUT DCB   DSORG=PS,                                               X
+               MACRF=(PM),                                             X
+               DDNAME=SCHEDOD,                                         X
+               RECFM=FB,                                               X
+               LRECL=80
+
+********************************************
+*        OUTPUT RECORD AREA                *
+********************************************
+OUTREC   DS    CL80
+
+********************************************
+*        INPUT FILE - DATA CONTROL BLOCK   *
+********************************************
+COPYIN   DCB   DSORG=PS,                                               X
+               MACRF=(GM),                                             X
+               DDNAME=COPYINDD,                                        X
+               RECFM=FB,                                               X
+               LRECL=80,                                               X
+               EODAD=COPYINEOF
+
+********************************************
+SCHEDIN  DCB   DSORG=PS,                                               X
+               MACRF=(GM),                                             X
+               DDNAME=SCHEDID,                                         X
+               RECFM=FB,                                               X
+               LRECL=80,                                               X
+               EODAD=SCHEDINEOF
+
+********************************************
+*        INPUT RECORD AREA                 *
+********************************************
+INREC    DS    CL80
+
+********************************************
+*        REGISTER SAVE AREA                *
+********************************************
+SAVEAREA DS    18F
+
+********************************************
+*        LITERAL POOL                      *
+********************************************
+         LTORG *
+
+********************************************
+*        END OF PROGRAM                    *
+********************************************
+         END   SCHEDMNG
+/*
+//SYSUDUMP   DD SYSOUT=*
+
